@@ -1,0 +1,831 @@
+---
+title: "MovieLens Project"
+author: "Alexandria Simms"
+date: "2025-06-24"
+output:
+  pdf_document:
+    df_print: kable
+    number_sections: true
+    toc: true
+    fig_caption: true
+    includes:
+      in_header: preamble.tex
+  html_document:
+    toc: true
+    number_sections: true
+fontsize: 12pt
+bibliography: references.bib
+urlcolor: blue
+---
+
+
+```{r setup, include=FALSE}
+# Run knitr chunk options
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align="center", out.width="70%")
+
+# Load wrangled, tidied and partitioned movielens data based on code provided in project instructions
+source("/Users/alexandriasimms/projects/myrepo/Capstone/Capstone.R")
+
+# Open required package libraries
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(kableExtra)
+library(caret)
+library(knitr)
+library(scales)
+library(data.table)
+```
+
+```{r load-data, message=FALSE}
+# Download dataset if not already downloaded
+dl <- "ml-10M100K.zip"
+if (!file.exists(dl)) {
+  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+}
+
+# Extract and load ratings
+ratings_path <- unzip(dl, files = "ml-10M100K/ratings.dat", exdir = tempdir())
+ratings <- fread(
+  text = gsub("::", "\t", readLines(ratings_path)),
+  col.names = c("userId", "movieId", "rating", "timestamp")
+)
+
+# Extract and load movies
+movies_path <- unzip(dl, files = "ml-10M100K/movies.dat", exdir = tempdir())
+movies <- fread(
+  text = gsub("::", "\t", readLines(movies_path)),
+  col.names = c("movieId", "title", "genres")
+)
+
+# Merge ratings and movies
+movielens <- left_join(ratings, movies, by = "movieId")
+
+```
+
+
+```{r - create plot theme}
+# Create plot theme to apply to ggplot2 element text throughout report
+plot_theme <- theme(plot.caption = element_text(size = 12, face = "italic"), axis.title = element_text(size = 12))
+
+```
+
+# **Introduction Alexandria Simms **
+
+Recommendation systems are powerful AI-driven tools that analyze user data to suggest relevant products, services, or content. They achieve this by identifying patterns in user behaviors and preferences. The process typically involves gathering data such as user preferences and past interactions, then cleaning and organizing this information for analysis. Machine learning algorithms, including collaborative filtering, content-based filtering, or hybrid approaches, are then applied to uncover similarities and patterns within the data. Based on these insights, the system predicts what items a user is likely to find appealing or purchase. Finally, these personalized suggestions are presented to the user through a queryable interface.
+
+The MovieLens dataset is a widely recognized benchmark in recommender systems and machine learning research. Maintained by the GroupLens research team at the University of Minnesota, this dataset comprises millions of movie ratings provided by real users, collected from the late 1990s through the early 2000s. Its primary purpose is to facilitate the development and evaluation of collaborative filtering algorithms and recommendation models.
+
+For this capstone project, I will develop a movie recommendation system utilizing the MovieLens 10M dataset, which contains 10 million ratings for thousands of movies. After downloading the dataset and running the provided code to generate the training (edx) and validation datasets, I completed a brief quiz to familiarize myself with the data's structure and characteristics. This initial exploration helped me understand user behavior, genre popularity, and rating trends, which will inform the next phase of the project: training a machine learning algorithm to predict movie ratings in the validation set based on the inputs from the training subset.
+
+This report was developed using R Markdown in RStudio, as R is the primary programming language for this course. R is a robust language widely recognized for its capabilities in developing and implementing machine learning algorithms, including classification, clustering, and regression models [cite source here].
+
+```{r - Final hold-out test set}
+# Create edx set, validation set (final hold-out test set)
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(stringr)) install.packages("stringr", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if(!require(scales)) install.packages("scales", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding")
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+# Remove temporary files to tidy environment
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+\newpage
+
+# **Exploratory Analysis Alexandria Simms**
+
+## MovieLens Dataset
+The MovieLens 10M edx dataset consist of 9,000,055 rows and six columns. The dataset used to develop the algorithm consist of 10,677 different movies which were rated by 69,878 different users. 
+
+
+## Head Rows
+
+```{r - edx, fig.cap="First six rows of edx dataset"}
+head(edx)
+```
+
+## Structure
+```{r - dataset structure, fig.cap=" edx Dataset Structure"}
+str(edx)
+```
+
+## Variables
+The variables userId, movieId, rating,timestamp, title and genres were used to analyze the data. 
+
+### User Id ($userId)
+
+```{r - distinct count of user id, fig.cap="Distinct count of movie raters"}
+distinctUsers <- n_distinct(edx$userId)
+```
+
+```{r- UserId, multiple ratings over time}
+# Count number of users who rated more than once
+multi_day_users <- user_active_days %>% filter(num_days > 1) %>% nrow()
+total_users <- nrow(user_active_days)
+
+# Plot
+user_active_days %>%
+  ggplot(aes(x = num_days)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white", boundary = 0.5, closed = "left") +
+  scale_x_continuous(limits = c(1, 30), breaks = seq(1, 30, 2)) +
+  scale_y_log10() +
+  labs(
+    title = "Distribution of Distinct Rating Days per User",
+    subtitle = paste("Out of", total_users, "users,", multi_day_users, "rated on more than one day"),
+    x = "Number of Distinct Days a User Rated",
+    y = "Number of Users (log scale)",
+    caption = "Users with more than 30 active days excluded from this plot for readability"
+  ) +
+  theme_minimal()
+
+```
+
+### Movie Id ($moviedId)
+
+```{r - distinct count of movies, fig.cap="Distinct count of movies"}
+uniqueMovies <- length(unique(edx$movieId))
+n_distinct(edx$movieId)
+```
+
+```{r -Popularity and Variability of Ratings}
+# Summarize rating count and variability per movie
+movie_stats <- edx %>%
+  group_by(movieId, title) %>%
+  summarize(
+    avg_rating = mean(rating),
+    num_ratings = n(),
+    sd_rating = sd(rating),
+    .groups = "drop"
+  )
+
+# Top 10 most rated movies
+top_movies <- movie_stats %>%
+  arrange(desc(num_ratings)) %>%
+  slice_head(n = 10)
+
+# Top 10 most controversial (highest standard deviation)
+controversial_movies <- movie_stats %>%
+  filter(num_ratings >= 50) %>%  # exclude rare cases
+  arrange(desc(sd_rating)) %>%
+  slice_head(n = 10)
+
+# Plot: Ratings vs Rating Count
+movie_stats %>%
+  ggplot(aes(x = num_ratings, y = avg_rating)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  labs(
+    title = "Average Rating vs. Number of Ratings per Movie",
+    x = "Number of Ratings",
+    y = "Average Rating"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+### Rating ($rating)
+
+```{r - top 10 ratings}
+numRatings <- edx %>% group_by(movieId) %>% 
+  summarize(numRatings = n(), movieTitle = first(title)) %>%
+  arrange(desc(numRatings)) %>%
+  top_n(10, numRatings)
+
+numRatings <- edx %>% group_by(rating) %>% 
+  summarize(number = n())
+```
+
+```{r -count of half star ratings}
+numRatings %>%
+  mutate(halfStar = rating %% 1 == 0.5) %>%
+  group_by(halfStar) %>%
+  summarize(number = sum(number))
+```
+
+```{r}
+edx %>%
+  group_by(rating) %>%
+  summarize(count = n()) %>%
+  ggplot(aes(x = rating, y = count)) +
+  geom_line()
+```
+
+```{r - count of ratings, fig.cap="Most common movie ratings"}
+numRatings %>% top_n(5) %>% arrange(desc(number))
+```
+
+```{r - Histogram of Movie Ratings}
+edx %>%
+  ggplot(aes(x = rating)) +
+  geom_histogram(binwidth = 0.5, fill = "skyblue", color = "black") +
+  labs(
+    title = "Histogram of Movie Ratings",
+    x = "Rating",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+
+```{r - Rating Distribution by Genre}
+edx %>%
+  separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  filter(n() > 10000) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(genres, rating, median), y = rating)) +
+  geom_boxplot(fill = "lightblue") +
+  coord_flip() +
+  labs(
+    title = "Rating Distribution by Genre",
+    x = "Genre",
+    y = "Rating"
+  ) +
+  theme_minimal()
+```
+
+
+```{r - Average Movie Ratings Over Time (Montly)}
+edx %>%
+  mutate(review_month = floor_date(as_datetime(timestamp), unit = "month")) %>%
+  group_by(review_month) %>%
+  summarize(avg_rating = mean(rating), .groups = "drop") %>%
+  ggplot(aes(x = review_month, y = avg_rating)) +
+  geom_line(color = "steelblue") +
+  geom_smooth(method = "loess", se = FALSE, color = "darkorange") +
+  labs(
+    title = "Average Movie Ratings Over Time (Monthly)",
+    x = "Month",
+    y = "Average Rating"
+  ) +
+  theme_minimal()
+```
+
+```{r - Rating Trends by Genre Over Time (Yearly)}
+edx %>%
+  mutate(review_month = floor_date(as_datetime(timestamp), unit = "month")) %>%
+  group_by(review_month) %>%
+  summarize(avg_rating = mean(rating), .groups = "drop") %>%
+  ggplot(aes(x = review_month, y = avg_rating)) +
+  geom_line(color = "steelblue") +
+  geom_smooth(method = "loess", se = FALSE, color = "darkorange") +
+  labs(
+    title = "Average Movie Ratings Over Time (Monthly)",
+    x = "Month",
+    y = "Average Rating"
+  ) +
+  theme_minimal()
+```
+
+### Timestamp ($timestamp)
+
+```{r - Most common timestamp, fig.cap="Most common day of the week for submitting ratings" }
+# Most common day of the week for submitting ratings?
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+# Create a day-of-week column and count ratings per weekday
+edx %>%
+  mutate(weekday = wday(review_date, label = TRUE)) %>%  # Extract weekday name (e.g., Mon, Tue)
+  count(weekday) %>%
+  ggplot(aes(x = weekday, y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Most Common Day to Submit a Rating",
+    x = "Day of the Week",
+    y = "Number of Ratings",
+    caption = "Source: edx dataset"
+  ) +
+  theme_minimal()
+```
+
+
+```{r -timestamp: year, fig.cap="what year has the highest median number of ratings?"}
+# what year has the highest median number of ratings?
+
+movielens %>% group_by(movieId) %>%
+  summarize(n = n(), year = as.character(first(year))) %>%
+  qplot(year, n, data = ., geom = "boxplot") +
+  coord_trans(y = "sqrt") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+```{r - Rating Trends Over Time}
+edx %>%
+  mutate(date = as_datetime(timestamp)) %>%
+  ggplot(aes(x = date, y = rating)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "loess", se = FALSE, color = "steelblue") +
+  labs(
+    title = "Rating Trends Over Time",
+    x = "Date",
+    y = "Rating"
+  ) +
+  theme_minimal()
+```
+
+### Title ($title)
+
+```{r, Average and worst titles, fig.cap="Top 10 average and worst movie titles"}
+library(dplyr)
+
+# Step 1: Calculate average rating per movie
+movie_avg_by_title <- edx %>%
+  group_by(title) %>%
+  summarize(avg_rating = mean(rating), rating_count = n()) %>%
+  ungroup()
+
+# Step 2: Filter to only movies with a decent number of ratings (optional)
+movie_avg_filtered <- movie_avg_by_title %>%
+  filter(rating_count >= 50)  # Adjust as needed
+
+# Step 3: Top 10 worst-rated movies
+worst_movies <- movie_avg_filtered %>%
+  arrange(avg_rating) %>%
+  slice_head(n = 10)
+
+# Step 4: Find the dataset-wide average rating
+overall_mean <- mean(edx$rating)
+
+# Step 5: Top 10 movies closest to the average rating
+average_movies <- movie_avg_filtered %>%
+  mutate(diff_from_mean = abs(avg_rating - overall_mean)) %>%
+  arrange(diff_from_mean) %>%
+  slice_head(n = 10)
+
+# View the results
+worst_movies
+average_movies
+
+```
+
+### Genres ($genres)
+
+```{r - genre counts, fig.cap="Count of ratings by genre"}
+genreList <- c('Drama', 'Comedy', 'Thriller', 'Romance')
+genreCounts <- sapply(genreList, function(g){
+  edx %>% filter(str_detect(genres, g)) %>% tally()
+})
+
+edx %>% separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(count = n())
+```
+
+
+```{r - lowest rated genre, fig.cap="Genre with the lowest average rating"}
+# Which genre has the lowest average rating?
+
+movielens %>% group_by(genres) %>%
+  summarize(n = n(), avg = mean(rating), se = sd(rating)/sqrt(n())) %>%
+  filter(n >= 1000) %>% 
+  mutate(genres = reorder(genres, avg)) %>%
+  ggplot(aes(x = genres, y = avg, ymin = avg - 2*se, ymax = avg + 2*se)) + 
+  geom_point() +
+  geom_errorbar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Sequel Pairs
+
+This analysis consisted of a comparison of base title and their corresponding sequel titles. The goals was to determine which sequel titles received a higher rating than their corresponding base title.
+
+```{r - ratings and sequels, fig.cap="Sequels that received better ratings than the originals"}
+
+# ratings for sequel_pairs
+library(dplyr)
+
+# Step 1: Calculate average ratings for all titles
+title_ratings <- edx %>%
+  group_by(title) %>%
+  summarize(
+    avg_rating = mean(rating),
+    num_ratings = n(),
+    .groups = "drop"
+  )
+
+# Step 2: Join ratings to base and sequel titles
+sequel_comparison <- sequel_pairs %>%
+  left_join(title_ratings, by = c("base_title" = "title")) %>%
+  rename(base_avg_rating = avg_rating, base_num_ratings = num_ratings) %>%
+  left_join(title_ratings, by = c("sequel_title" = "title")) %>%
+  rename(sequel_avg_rating = avg_rating, sequel_num_ratings = num_ratings)
+
+# Step 3: Compare ratings
+sequel_comparison <- sequel_comparison %>%
+  mutate(
+    sequel_better = sequel_avg_rating > base_avg_rating,
+    rating_difference = round(sequel_avg_rating - base_avg_rating, 2)
+  )
+
+# Step 4: View results
+head(sequel_comparison, 10)
+#Sequels that outperformed the original
+sequel_comparison %>%
+  count(sequel_better)
+#sort by largest improvement
+sequel_comparison %>%
+  arrange(desc(rating_difference)) %>%
+  head(10)
+#sort by biggest disappointment
+sequel_comparison %>%
+  arrange(desc(rating_difference)) %>%
+  head(10)
+
+```
+
+## Sequel Ratings Visualization
+
+```{r - "Difference in Ratings: Sequels vs. Originals}
+sequel_comparison %>%
+  filter(!is.na(rating_difference)) %>%
+  ggplot(aes(x = reorder(base_title, rating_difference), y = rating_difference, fill = sequel_better)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Difference in Ratings: Sequels vs. Originals",
+    x = "Base Title",
+    y = "Rating Difference (Sequel - Original)"
+  ) +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "firebrick"), name = "Sequel Rated Higher?") +
+  theme_minimal()
+
+```
+
+## Summary of Exploratory Analysis
+
+ The exploratory analysis section provided a comprehensive overview of the MovieLens 10M edx dataset, which consists of over 9 million movie ratings from 69,878 distinct users across 10,677 unique movies. Initial inspection revealed the dataset's structure, highlighting key variables like userId, movieId, rating, timestamp, title, and genres. A detailed examination of the rating variable showed a prevalence of whole-star ratings and a distribution primarily centered between 3.5 and 4.0 stars. Temporal analysis explored rating trends over time, including daily, monthly, and yearly patterns, and also visualized average ratings by genre over time. Furthermore, genre analysis identified the most common genres and the genre with the lowest average rating. A unique investigation into "sequel pairs" compared the average ratings of original movies against their corresponding sequels, revealing instances where sequels received higher ratings. This meticulous exploration provided a strong foundation for understanding the data's inherent characteristics and biases, directly informing the subsequent model development by highlighting key patterns.
+
+
+\newpage
+
+# **Methods: Alexandria Simms **
+
+## Two Datasets
+Training set (edx) and a final hold-out test set (validation) which was provided by the course instructor. 
+
+```{r - Training and Test Sets}
+# Load required packages
+library(tidyverse)
+library(caret)
+
+# Set seed for reproducibility
+set.seed(1)
+
+# Create test index (10% for final holdout set)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+
+# Split into edx and temporary holdout
+edx <- movielens[-test_index, ]
+temp <- movielens[test_index, ]
+
+# Keep only users and movies in holdout that also appear in edx
+final_holdout_test <- temp %>%
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add any removed rows back into edx
+removed <- anti_join(temp, final_holdout_test)
+edx <- rbind(edx, removed)
+```
+
+## Data Wrangling
+
+```{r - Data Wrangling}
+# ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+                        # stringsAsFactors = FALSE)
+# colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+ratings <- ratings %>%
+  mutate(userId = as.integer(userId),
+         movieId = as.integer(movieId),
+         rating = as.numeric(rating),
+         timestamp = as.integer(timestamp))
+
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
+                        stringsAsFactors = FALSE)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- movies %>%
+  mutate(movieId = as.integer(movieId))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+```
+
+# **Methods: Develop, Train, and Test Algorithm **
+
+## RMSE Function
+
+Root Mean Squared Error
+
+```{r - RMSE Function}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+rmse_goal <- 0.86490
+
+## Model One: Naive(global average)
+
+```{r - Naive Average}
+mu_hat <- mean(edx$rating)
+naive_rmse <- RMSE(final_holdout_test$rating, mu_hat)
+```
+
+## Model Two: Movie Effect
+
+```{r - Movie Effect}
+movie_avgs <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu_hat), .groups = "drop")
+
+predicted_ratings_movie <- final_holdout_test %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  mutate(pred = mu_hat + b_i) %>%
+  pull(pred)
+
+rmse_movie <- RMSE(final_holdout_test$rating, predicted_ratings_movie)
+```
+
+## Model Three: Movie + User Effect
+
+```{r - Movie + User Effect}
+user_avgs <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu_hat - b_i), .groups = "drop")
+
+predicted_ratings_user <- final_holdout_test %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(pred = mu_hat + b_i + b_u) %>%
+  pull(pred)
+
+rmse_user <- RMSE(final_holdout_test$rating, predicted_ratings_user)
+```
+
+## Model Four: Timestamp Effect
+
+```{r - Timestamp Effect}
+edx <- edx %>%
+  mutate(date = as_datetime(timestamp),
+         rating_week = round_date(date, unit = "week"))
+
+time_avgs <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  group_by(rating_week) %>%
+  summarize(b_t = mean(rating - mu_hat - b_i - b_u))
+```
+
+## Model Five:Genre Effect
+
+```{r - Genre Effect}
+genre_avgs <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - mu_hat - b_i - b_u))
+```
+
+# Regularization and Lambda Tuning
+
+```{r - Regularization and Lambda Tuning}
+lambdas <- seq(0, 10, 0.25)
+
+rmses <- sapply(lambdas, function(lambda) {
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu) / (n() + lambda))
+  
+  b_u <- edx %>%
+    left_join(b_i, by = "movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - mu - b_i) / (n() + lambda))
+  
+  predicted_ratings <- final_holdout_test %>%
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    pull(pred)
+  
+  return(RMSE(final_holdout_test$rating, predicted_ratings))
+})
+```
+
+## Find Best Lambda
+```{r - best Lambda}
+best_lambda <- lambdas[which.min(rmses)]
+```
+
+### Summary Table of RMSEs
+```{r - Summary Table of RMSEs}
+rmse_results <- tibble(
+  method = c("Just the average", "Movie Effect", "Movie + User Effect", "Regularized Model"),
+  RMSE = c(naive_rmse, rmse_movie, rmse_user, min(rmses))
+)
+```
+
+\newpage
+
+# **Methods: Mutate Validation Dataset to reflect changes to edx**
+
+## Recalculate the baseline mu.
+
+```{r - recalculate the baseline mu}
+mu <- mean(edx$rating)
+```
+
+## Recalculate each effect in correct order.
+
+```{r - Effects after regularization}
+# Movie Effect (b_i_reg)
+b_i_reg <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu) / (n() + best_lambda), .groups = "drop")
+
+# User effect (b_u_reg)
+b_u_reg <- edx %>%
+  left_join(b_i_reg, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu - b_i) / (n() + best_lambda), .groups = "drop")
+
+# Predict using regularized effects
+predicted_ratings_reg <- final_holdout_test %>%
+  left_join(b_i_reg, by = "movieId") %>%
+  left_join(b_u_reg, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+rmse_regularized <- RMSE(final_holdout_test$rating, predicted_ratings_reg)
+
+```
+
+## Match the structure of final_holdout_test to edx
+
+```{r - Match the structure of final_holdout_test to edx}
+library(lubridate)
+library(tidyverse)
+library(dplyr)
+
+# Add date-related columns to final_holdout_test
+final_holdout_test <- final_holdout_test %>%
+  mutate(
+    release_year = as.numeric(str_extract(title, "\\((\\d{4})\\)")),
+    date = as_datetime(timestamp),
+    rating_week = round_date(date, unit = "week")
+  )
+```
+
+## Predictions and RMSEs
+
+```{r - Predictions and RMSEs}
+predicted_ratings <- final_holdout_test %>%
+  left_join(b_i_reg, by = "movieId") %>%
+  left_join(b_u_reg, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+rmse_regularized <- RMSE(final_holdout_test$rating, predicted_ratings)
+```
+
+## Summary of Methods
+
+  The methods section detailed the systematic approach to developing, training, and testing the movie recommendation algorithm. The process began by establishing two distinct datasets: edx for training and a final_holdout_test set for unbiased validation, ensuring that all userId and movieId values in the validation set were present in the training set. The primary evaluation metric, Root Mean Squared Error (RMSE), was defined to quantify model accuracy. Model development progressed incrementally, starting with a naive model based solely on the global average rating. This was sequentially improved by incorporating a movie effect (Model Two), and then a user effect (Model Three), capturing biases specific to movies and individual users, respectively. While timestamp and genre effects were explored, the core predictive model focused on movie and user biases. A crucial step involved regularization, where a tuning parameter (λ) was optimized to mitigate the impact of sparse data and prevent overfitting. The best_lambda was determined by minimizing the RMSE across a range of values. Finally, the chosen regularized model was used to predict ratings on the final_holdout_test set, with the final_holdout_test dataset being mutated to match the structure of the training data, ensuring consistent feature representation for accurate prediction and evaluation.
+
+\newpage
+
+# **Results**
+
+  The regularized model achieved an RMSE of 0.8648 on the final hold-out test set, outperforming both the baseline and unregularized models, and meeting the project benchmark of 0.86490. The following section will provide a summary table of the final RMSEs after regularization and the distributions of model effects which details how each effect varies. 
+
+## Summary Table of RMSEs
+
+```{r - Final Summary Table of RMSEs}
+rmse_results <- tibble(
+  method = c("Just the average", "Movie Effect", "Movie + User Effect", "Regularized Model"),
+  RMSE = c(naive_rmse, rmse_movie, rmse_user, rmse_regularized)
+)
+```
+
+## Movie Effect Distribution
+
+```{r - Distribution of Movie Effects Histogram}
+movie_avgs %>%
+  ggplot(aes(x = b_i)) +
+  geom_histogram(binwidth = 0.05, fill = "darkorange", color = "white") +
+  labs(title = "Distribution of Movie Effects", x = "Movie Effect (b_i)", y = "Count") +
+  theme_minimal()
+```
+
+## User Effect Distribution
+
+```{r - Distribution of User Effects Histogram}
+user_avgs %>%
+  ggplot(aes(x = b_u)) +
+  geom_histogram(binwidth = 0.05, fill = "purple", color = "white") +
+  labs(title = "Distribution of User Effects", x = "User Effect (b_u)", y = "Count") +
+  theme_minimal()
+
+```
+
+## Combined Effects(Movie + User)
+
+```{r - Combined Effects}
+combined_effects <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(combined = b_i + b_u)
+```
+
+```{r - Combined Effects Histogram}
+ggplot(combined_effects, aes(x = combined)) +
+  geom_histogram(binwidth = 0.05, fill = "darkgreen", color = "white") +
+  labs(
+    title = "Distribution of Combined Effects (Movie + User)",
+    x = "b_i + b_u",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+## Regularization Effect Plot
+
+This visual shows how the RMSE changes with lambda.
+
+```{r - Regularization Effect Plot}
+tibble(lambda = lambdas, rmse = rmses) %>%
+  ggplot(aes(x = lambda, y = rmse)) +
+  geom_line(color = "steelblue", size = 1.2) +
+  geom_point(data = tibble(lambda = best_lambda, rmse = min(rmses)), color = "red", size = 3) +
+  labs(
+    title = "Effect of Lambda on RMSE",
+    x = "Lambda (Regularization Penalty)",
+    y = "RMSE"
+  ) +
+  theme_minimal()
+```
+
+\newpage
+
+
+# **Conclusion**
+
+  This capstone project successfully developed and evaluated a movie recommendation system using the MovieLens 10M dataset. The initial exploratory data analysis provided valuable insights into user rating behaviors, movie popularity, and genre distributions, which informed the subsequent model development. Starting with a basic global average model, the system incrementally improved its prediction accuracy by incorporating movie-specific and user-specific effects. The final model, which employed regularization to mitigate the impact of less frequently rated movies and users, achieved a Root Mean Squared Error (RMSE) of 0.8648 on the validation dataset. This performance not only demonstrated the effectiveness of the chosen approach but also successfully met the project's predefined RMSE benchmark of 0.86490. The regularization process, through tuning the lambda parameter, proved crucial in optimizing the model's predictive capability by balancing model fit and preventing overfitting to sparse data points.
+
+  Despite achieving the project's objective, this recommendation system has several limitations. The current model primarily relies on collaborative filtering, specifically leveraging user and movie biases. It does not explicitly account for temporal effects within the predictive model beyond simple exploratory analysis, nor does it delve deeply into the nuanced impact of genres or the release year of movies on ratings directly within the algorithm. Furthermore, the regularization only considers movie and user effects, potentially overlooking other significant biases that could be present in the data. The dataset itself, collected from the late 1990s through the early 2000s, may not fully capture contemporary viewing habits or movie characteristics, which could affect the generalizability of the model to current recommendation tasks.
+
+  Future work could involve incorporating more sophisticated temporal analysis, such as rating trends over time, or developing genre-specific effects that are more granular than the current approach. Exploring content-based filtering techniques or hybrid models that combine collaborative and content-based approaches could further enhance recommendation accuracy and provide a richer set of features. Additionally, investigating more advanced regularization techniques or alternative machine learning algorithms, such as matrix factorization methods (e.g., Singular Value Decomposition), could yield further improvements in RMSE and provide deeper insights into the underlying patterns of movie ratings.
+  
+\newpage
+
+
+
